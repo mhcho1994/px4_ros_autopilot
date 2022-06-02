@@ -1,0 +1,73 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    // Example launch of a python file
+    {
+      "name": "Python: Current File",
+      "type": "python",
+      "request": "launch",
+      "program": "${file}",
+      "preLaunchTask": "prerun_python",
+      "console": "integratedTerminal",
+      "args": []
+    },
+    // Example gdb launch of a ros executable  
+    {
+      "name": "(gdb) Launch",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/install/lib/${input:package}/${input:program}",
+      "args": [],
+      "preLaunchTask": "",
+      "stopAtEntry": true,
+      "cwd": "${workspaceFolder}",
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "envFile": "${workspaceFolder}/.env",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    },        
+    {
+      "name": "(gdbserver) Launch",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/install/lib/${input:package}/${input:program}",
+      "args": [],
+      "preLaunchTask": "",
+      "stopAtEntry": true,
+      "cwd": "${workspaceFolder}",
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerServerAddress": "localhost:3000",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    },
+  ],
+  "inputs": [
+    {
+      "id": "package",
+      "type": "promptString",
+      "description": "Package name",
+      "default": "cpp_pubsub"
+    },
+    {
+      "id": "program",
+      "type": "promptString",
+      "description": "Program name",
+      "default": "talker"
+    }
+  ]
+}
