@@ -81,6 +81,12 @@ class extgcu_fm_module(Node):
             self.process_controller_status,
             10
         )
+        self.vehicle_trajectory_subscriber_         =   self.create_subscription(
+            ExtGCUTrajectory,
+            'extgcu/trajectory',
+            self.process_vehicle_trajectory,
+            10
+        )
 
         # Initialize parameters for timer callback function
         self.timer_period                           =   numpy.float32(0.1)
@@ -119,7 +125,7 @@ class extgcu_fm_module(Node):
         self.ARMING_ACTION_DISARM_ 					=	numpy.uint8(0)
         self.ARMING_ACTION_ARM_ 					=	numpy.uint8(1)
 
-        # # Initialize fields for trajectory setpoint topic
+        # Initialize fields for trajectory setpoint topic
         self.trajectory_setpoint_x_ 				=	numpy.float32(0.0)
         self.trajectory_setpoint_y_ 				=	numpy.float32(0.0)
         self.trajectory_setpoint_z_ 				=	numpy.float32(0.0)
@@ -190,6 +196,9 @@ class extgcu_fm_module(Node):
         # Initialize fields of controller status topic
         self.external_controller_ready_             =   numpy.uint8(0)
 
+        # Initialize fields of 
+        self.wpts_targeted_offboard_             =   numpy.zeros((3,3),dtype=numpy.float32)
+
         # Declare subscribers once to avoid unused variable warning
         self.timesync_subscriber_
         self.vehicle_status_subscriber_
@@ -197,6 +206,7 @@ class extgcu_fm_module(Node):
         self.vehicle_local_position_subscriber_
         self.autopilot_status_subscriber_ 
         self.controller_status_subscriber_
+        self.vehicle_trajectory_subscriber_
 
     # Flight management module callback function
     def fm_callback(self):
@@ -300,7 +310,7 @@ class extgcu_fm_module(Node):
         # Exit when the multicoptor is located within the acceptance horizontal/vertical radius
         if self.flight_phase_ == 2:
 
-            # entry:
+            # entry:_mission.count
             if self.entry_execute_:
 
                 self.entry_execute_ 			= 	0
@@ -398,6 +408,10 @@ class extgcu_fm_module(Node):
         self.temp_callback_counter_             =   self.temp_callback_counter_+1
         self.total_callback_counter_            =   self.total_callback_counter_+1
 
+        print(self.wpts_targeted_offboard_[0,:])
+        print(self.wpts_targeted_offboard_[1,:])
+        print(self.wpts_targeted_offboard_[2,:])
+
     # Publisher functions
     def publish_vehicle_command(self,command,param1=float(0.0),param2=float(0.0),param3=float(0.0)):
         msg                                         =   VehicleCommand()
@@ -417,9 +431,9 @@ class extgcu_fm_module(Node):
     def publish_trajectory_setpoint(self):
         msg                                         =   TrajectorySetpoint()
         msg.timestamp                               =   int(self.timesync_timestamp_)
-        msg.x                                       =   float(self.trajectory_setpoint_x_)
-        msg.y                                       =   float(self.trajectory_setpoint_y_)
-        msg.z                                       =   float(self.trajectory_setpoint_z_)
+        msg.position[0]                             =   float(self.trajectory_setpoint_x_)
+        msg.position[1]                             =   float(self.trajectory_setpoint_y_)
+        msg.position[2]                             =   float(self.trajectory_setpoint_z_)
         msg.yaw                                     =   float(self.trajectory_setpoint_yaw_)
 
         self.trajectory_setpoint_publisher_.publish(msg)
@@ -467,6 +481,14 @@ class extgcu_fm_module(Node):
 
     def process_controller_status(self,msg):
         self.external_controller_ready_             =   numpy.uint8(msg.external_controller_ready)
+
+    def process_vehicle_trajectory(self,msg):
+        for idx in range(3):
+            self.wpts_targeted_offboard_[idx,:]     =   msg.waypoints[idx].position
+
+        self.last_wpt_call_                         =   msg.last_wpt_call
+        self.wpt_update_reply_                      =   msg.wpt_update_reply
+        self.external_wpt_manager_ready_            =   msg.external_wpt_manager_ready
 
 def main():
 

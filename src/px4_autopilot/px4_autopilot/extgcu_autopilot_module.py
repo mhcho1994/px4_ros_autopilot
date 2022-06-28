@@ -105,7 +105,8 @@ class extgcu_autopilot_module(Node,autopilot):
         self.last_wpt_call_                     =   numpy.uint8(0)
         self.wpt_update_reply_                  =   numpy.uint8(0)
         self.external_wpt_manager_ready_        =   numpy.uint8(0)
-        self.required_wpts_position_            =   numpy.zeros((2,3),dtype=numpy.float32)
+        self.targeted_wpts_position_            =   numpy.zeros((3,3),dtype=numpy.float32)
+        self.targeted_wpts_position_memory_     =   numpy.zeros((3,3),dtype=numpy.float32)
 
         # Initialize fields of flight management status topic
         self.external_autopilot_engage_         =   numpy.uint8(0)
@@ -132,11 +133,11 @@ class extgcu_autopilot_module(Node,autopilot):
             else:
                 self.external_autopilot_ready_      =   1
         
-        else:
+        elif (self.external_autopilot_engage_ == 1) and (self.last_wpt_call_ == 1):
 
-            rel_dist_wpt          =   numpy.sqrt(numpy.power(self.required_wpts_position_[1,0]-self.X_virtual_[0],2)+ \
-                                            numpy.power(self.required_wpts_position_[1,1]-self.X_virtual_[1],2)+ \
-                                            numpy.power(self.required_wpts_position_[1,2]-self.X_virtual_[2],2))
+            rel_dist_wpt          =   numpy.sqrt(numpy.power(self.targeted_wpts_position_[1,0]-self.X_virtual_[0],2)+ \
+                                            numpy.power(self.targeted_wpts_position_[1,1]-self.X_virtual_[1],2)+ \
+                                            numpy.power(self.targeted_wpts_position_[1,2]-self.X_virtual_[2],2))
 
             if rel_dist_wpt < numpy.float32(15):
                 self.external_autopilot_ready_      =   0
@@ -198,11 +199,11 @@ class extgcu_autopilot_module(Node,autopilot):
         self.LA_dist_           =   self.T_horizon_*spd_vehicle_3d
 
         # Get initial position of virtual target from initial waypoints information
-        psigam_ref              =   get_3D_to_AzEl(self.required_wpts_position_[1,:] \
-                                                        -self.required_wpts_position_[0,:])
+        psigam_ref              =   get_3D_to_AzEl(self.targeted_wpts_position_[1,:] \
+                                                        -self.targeted_wpts_position_[0,:])   # index -1
 
-        self.X_virtual_[0:3]    =   self.required_wpts_position_[0,:]+ \
-                                        spd_vehicle_3d*get_AzEl_to_3D(psigam_ref)*self.T_horizon_
+        self.X_virtual_[0:3]    =   self.targeted_wpts_position_[0,:]+ \
+                                        spd_vehicle_3d*get_AzEl_to_3D(psigam_ref)*self.T_horizon_ # index -1
 
         # Calculate relative position between virtual target and vehicle
         self.R_rel_[0]          =   self.X_virtual_[0]-self.vehicle_local_position_x_
@@ -237,6 +238,9 @@ class extgcu_autopilot_module(Node,autopilot):
 
         # Estimate line-of-sight in 3D Cartesian coordinate
         self.Lambda             =   get_3D_to_AzEl(self.R_rel_)
+
+        # Save targeted waypoints information
+        self.targeted_wpts_position_memory_     =   self.targeted_wpts_position_
 
     # Update kinematics of vehicle and virtual target
     def kinematics_update(self):
@@ -289,27 +293,47 @@ class extgcu_autopilot_module(Node,autopilot):
                                         numpy.power(self.vehicle_local_position_vz_,2))
         spd_vehicle_3d          =   numpy.max(numpy.array([spd_vehicle_3d,self.V_lbound_]))
 
-        if numpy.linalg.norm(self.required_wpts_position_[1,:]-pos_vehicle_3d) < self.LA_dist_:
+        if self.publish_mode_ == 0:
 
-            self.wpt_update_request_    =   1
+            if numpy.linalg.norm(self.targeted_wpts_position_[1,:]-pos_vehicle_3d) < self.LA_dist_: # index -1
 
-        if (self.wpt_update_request_ == 1) and (self.wpt_update_reply_ == 1):
+                self.wpt_update_request_    =   1
 
-            self.wpt_update_request_    =   0
+            if (self.wpt_update_request_ == 1) and (self.wpt_update_reply_ == 1):
 
-            psigam_ref              =   get_3D_to_AzEl(self.required_wpts_position_[1,:]- \
-                                            self.required_wpts_position_[0,:])
-            self.X_virtual_[0:3]    =   self.required_wpts_position_[0,:]+ \
-                                            self.X_virtual_[3:6]*self.ap_dt_
-            self.X_virtual_[3:6]    =   spd_vehicle_3d*self.LA_dist_/max(self.R_rel_norm_, \
-                                            self.eps_)*get_AzEl_to_3D(psigam_ref)
+                self.wpt_update_request_    =   0
 
-        else:
+                psigam_ref              =   get_3D_to_AzEl(self.targeted_wpts_position_[1,:]- \
+                                                self.targeted_wpts_position_[0,:]) # index -1
+                self.X_virtual_[0:3]    =   self.targeted_wpts_position_[0,:]+ \
+                                                self.X_virtual_[3:6]*self.ap_dt_ # index -1
+                self.X_virtual_[3:6]    =   spd_vehicle_3d*self.LA_dist_/max(self.R_rel_norm_, \
+                                                self.eps_)*get_AzEl_to_3D(psigam_ref)
 
-            self.X_virtual_[0:3]    =   self.X_virtual_[0:3]+self.X_virtual_[3:6]*self.ap_dt_
-            self.X_virtual_[3:6]    =   spd_vehicle_3d*self.LA_dist_/max(self.R_rel_norm_, \
-                                            self.eps_)*get_AzEl_to_3D( \
-                                            get_3D_to_AzEl(self.X_virtual_[3:6]))
+            else:
+
+                self.X_virtual_[0:3]    =   self.X_virtual_[0:3]+self.X_virtual_[3:6]*self.ap_dt_
+                self.X_virtual_[3:6]    =   spd_vehicle_3d*self.LA_dist_/max(self.R_rel_norm_, \
+                                                self.eps_)*get_AzEl_to_3D( \
+                                                get_3D_to_AzEl(self.X_virtual_[3:6]))
+
+        elif self.publish_mode_ == 2:
+
+            if numpy.linalg.norm(self.targeted_wpts_position_[1,:]-self.targeted_wpts_position_memory_[1,:]) > self.eps_*self.V_desired_: # index -1
+
+                psigam_ref              =   get_3D_to_AzEl(self.targeted_wpts_position_[1,:]- \
+                                                self.targeted_wpts_position_[0,:]) # index -1
+                self.X_virtual_[0:3]    =   self.targeted_wpts_position_[0,:]+ \
+                                                self.X_virtual_[3:6]*self.ap_dt_ # index -1
+                self.X_virtual_[3:6]    =   spd_vehicle_3d*self.LA_dist_/max(self.R_rel_norm_, \
+                                                self.eps_)*get_AzEl_to_3D(psigam_ref)
+
+            else:
+
+                self.X_virtual_[0:3]    =   self.X_virtual_[0:3]+self.X_virtual_[3:6]*self.ap_dt_
+                self.X_virtual_[3:6]    =   spd_vehicle_3d*self.LA_dist_/max(self.R_rel_norm_, \
+                                                self.eps_)*get_AzEl_to_3D( \
+                                                get_3D_to_AzEl(self.X_virtual_[3:6]))
 
     def get_guidance_cmd(self):
 
@@ -382,12 +406,13 @@ class extgcu_autopilot_module(Node,autopilot):
 
     def process_vehicle_trajectory(self,msg):
 
-        for idx in range(2):
-            self.required_wpts_position_[idx,:]     =   msg.waypoints[idx].position
+        for idx in range(3):
+            self.targeted_wpts_position_[idx,:]     =   msg.waypoints[idx].position
 
         self.last_wpt_call_                         =   msg.last_wpt_call
         self.wpt_update_reply_                      =   msg.wpt_update_reply
         self.external_wpt_manager_ready_            =   msg.external_wpt_manager_ready
+        self.publish_mode_                          =   msg.publish_mode
 
     def process_fm_status(self,msg):
         self.external_autopilot_engage_             =   numpy.uint8(msg.external_autopilot_engage)

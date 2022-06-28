@@ -117,7 +117,7 @@ echo "============ Build & Source ROS packages ============"
 if [ -z ${px4_ros_ws_path} ]; then
   echo -e "The location of ROS working space is not specified"
   echo -e "Check the default directory ..."
-  px4_ros_ws_path="${HOME}/px4_ros_guidance"
+  px4_ros_ws_path="${HOME}/px4_ros_autopilot"
   if [ -e ${px4_ros_ws_path} ]; then
     echo -e "ROS working space exists in the default directory"
   else
