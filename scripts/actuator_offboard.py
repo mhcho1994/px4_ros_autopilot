@@ -100,35 +100,39 @@ class OffboardControlModule(Node):
         self.timer_controller_ = self.create_timer(0.005, self.controller_output_publish_)
 
         # initialize odometry
-        self.last_odom_receive = np.uint64(0)
-        self.odom_position = np.zeros(3, dtype=np.float32)
-        self.odom_velocity = np.zeros(3, dtype=np.float32)
-        self.odom_quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        self.odom_rate = np.zeros(3, dtype=np.float32)
+        self.last_odom_receive_ = np.uint64(0)
+        self.odom_position_ = np.zeros(3, dtype=np.float32)
+        self.odom_velocity_ = np.zeros(3, dtype=np.float32)
+        self.odom_quaternion_ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.odom_rate_ = np.zeros(3, dtype=np.float32)
 
         # initialize reference command
-        self.command_position = np.zeros(3, dtype=np.float32)
-        self.command_quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.command_position_ = np.zeros(3, dtype=np.float32)
+        self.command_quaternion_ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
         # initialize controller mode, navigation state, guidance flow
-        self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
-        self.control_mode = OffboardControlType.POSITION
+        self.nav_state_ = VehicleStatus.NAVIGATION_STATE_MAX
+        self.arming_state_ = VehicleStatus.ARMING_STATE_DISARMED 
+        self.control_mode = OffboardControlType.ACTUATOR
         self.controller_type = ControllerType.SE3_GEOMETRIC
-        self.entry_excute = False
-        self.flight_phase = np.uint8(0)
-        self.next_phase_flag = False
-        self.phase_clock = np.uint32(0)
+        self.entry_excute_ = False
+        self.flight_phase_ = np.uint8(0)
+        self.next_phase_flag_ = False
+        self.target_takeoff_alt_ = np.float32(10.0) # [m] target takeoff altitude, TODO: parameterize this value
+        self.offboard_time_ = np.uint32(10)*10**6 # [us] offboard time, TODO: parameterize this value
+
 
     # callbacks
     def vehicle_odometry_subscribe_(self, msg):
-        self.last_odom_receive = msg.timestamp
-        self.odom_position = np.array(msg.position, dtype=np.float32)
-        self.odom_velocity = np.array(msg.velocity, dtype=np.float32)
-        self.odom_quaternion = np.array(msg.q, dtype=np.float32)
-        self.odom_rate = np.array(msg.angular_velocity, dtype=np.float32)
+        self.last_odom_receive_ = msg.timestamp
+        self.odom_position_ = np.array(msg.position, dtype=np.float32)
+        self.odom_velocity_ = np.array(msg.velocity, dtype=np.float32)
+        self.odom_quaternion_ = np.array(msg.q, dtype=np.float32)
+        self.odom_rate_ = np.array(msg.angular_velocity, dtype=np.float32)
 
     def vehicle_status_subscribe_(self, msg):
-        self.nav_state = msg.nav_state
+        self.nav_state_ = msg.nav_state
+        self.arming_state_ = msg.arming_state
 
     # def pose_command_subscribe_(self, msg):
     #     self.command_position = msg.point
@@ -205,65 +209,117 @@ class OffboardControlModule(Node):
         self.publishers_['trajectory_setpoint'].publish(msg)
 
     def flight_mode_manage_(self):
-
         # flight phase 0: idle/arming/takeoff
-        if self.flight_phase == 0:
+        if self.flight_phase_ == 0:
             # entry:
-            if self.entry_excute == False:
+            if self.entry_excute_ == False:
                 self.get_logger().info('flight phase 0: idle/arming/auto-takeoff')
-                self.entry_excute = True
-                target_takeoff_alt = np.float32(10.0) # [m] target takeoff altitude
+                self.entry_excute_ = True
             # during:
             # self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 2.0) # [-] default auto-takeoff to 2.5m ASL
-            self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF, 0.0, 0.0, 0.0, np.nan, np.nan, np.nan, target_takeoff_alt) # [deg, m] yaw in NED, lat/LON in WGS-84, altitude AMSL
+            self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF, 0.0, 0.0, 0.0, np.nan, np.nan, np.nan, float(self.target_takeoff_alt_)) # [deg, m] yaw in NED, lat/LON in WGS-84, altitude AMSL
             self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
             # exit:
-            if -(self.odom_position) > -(target_takeoff_alt-1.0):
-                self.offboard_mode_publish_()
-                self.next_phase_flag = True
+            if self.odom_position_[2] < -self.target_takeoff_alt_+1.0:
+                self.get_logger().info('reaching preset altitude, switching to next flight phase')
+                self.next_phase_flag_ = True
 
-        elif self.flight_phase == 1:
+        elif self.flight_phase_ == 1:
             # entry:
-            if self.entry_execute == False:
+            if self.entry_execute_ == False:
                 self.get_logger().info('flight phase 1: offboard control')
-                self.entry_execute = True
+                self.offboard_mode_publish_()
+                self.offboard_clock_ = int(Clock().now().nanoseconds/1000)
+                self.entry_execute_ = True
+            # during:
+            if self.nav_state_ != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+                self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0) # [-] switch to offboard mode
+            self.offboard_mode_publish_()
+            # exit:
+            if int(Clock().now().nanoseconds/1000)-self.offboard_clock_ > self.offboard_time_:
+                self.get_logger().info('offboard time is over, switching to next flight phase')
+                self.next_phase_flag_ = True
 
-        if self.next_phase_flag:
-            past_flag_temp = self.flight_phase
-            self.flight_phase = self.flight_phase+1
-            new_flag_temp = self.flight_phase
-            self.next_phase_flag = False
-            self.entry_execute = False
+        elif self.flight_phase_ == 2:
+            # entry:
+            if self.entry_execute_ is False:
+                self.get_logger().info('flight phase 2: landing')
+                self.entry_execute_ = True
+            # during:
+            if self.nav_state_ != VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
+                self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 6.0)
+            # exit:
+            if self.arming_state_ == VehicleStatus.ARMING_STATE_DISARMED:
+                self.get_logger().info('landing is done, switching to next flight phase')
+                self.next_phase_flag_ = True
 
-            print('Next Flight Phase %d -> %d' %(past_flag_temp,new_flag_temp))
+        else:
+            if self.entry_execute_ is False:
+                self.get_logger().info('flight finished')
+                self.entry_execute_ = True
 
+        if self.next_phase_flag_:
+            past_flag_temp_ = self.flight_phase_
+            self.flight_phase_ = self.flight_phase_+1
+            new_flag_temp_ = self.flight_phase_
+            self.next_phase_flag_ = False
+            self.entry_execute_ = False
 
+            self.get_logger().info('next flight phase %d -> %d' %(past_flag_temp_,new_flag_temp_))
 
     def controller_output_publish_(self):
-
-        # print(self.nav_state)
-        if self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
-
-        # self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,idx,1.0)
-
-        # print(self.control_mode)
+        if self.nav_state_ == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
             match self.control_mode:
                 case OffboardControlType.POSITION:
                     self.trajectory_sepoint_publish_(np.array([0.0, 0.0, -20.0], dtype=np.float32), np.float32(0.0))
                 case OffboardControlType.VELOCITY:
-                    self.get_logger().info('to be updated')
+                    self.get_logger().info('not supported yet: choose POSITION or ACTUATOR control mode')
                 case OffboardControlType.ACCELERATION:
-                    self.get_logger().info('to be updated')
+                    self.get_logger().info('not supported yet: choose POSITION or ACTUATOR control mode')
                 case OffboardControlType.ATTITUDE:
-                    self.get_logger().info('to be updated')
+                    self.get_logger().info('not supported yet: choose POSITION or ACTUATOR control mode')
                 case OffboardControlType.RATE:
-                    self.get_logger().info('to be updated')
+                    self.get_logger().info('not supported yet: choose POSITION or ACTUATOR control mode')
                 case OffboardControlType.TORQUETHRUST:
-                    self.get_logger().info('to be updated')
+                    self.get_logger().info('not supported yet: choose POSITION or ACTUATOR control mode')
                 case OffboardControlType.ACTUATOR:
                     self.actuator_motors_publish_(np.array([0.8, 0.8, 0.8, 0.8], dtype=np.float32))
                 case _:
                     self.get_logger().info('unknown control mode, disable all offboard modes')
+
+    def control_allocation(self, desired_wrench):
+        self.
+
+# INFO  [control_allocator]   Effectiveness.T =
+#   | 0      | 1      | 2      | 3      | 4      | 5      
+#  0|-1.43000  0.84500  0.32500  0        0       -6.50000 
+#  1| 1.30000 -0.84500  0.32500  0        0       -6.50000 
+#  2| 1.43000  0.84500 -0.32500  0        0       -6.50000 
+#  3|-1.30000 -0.84500 -0.32500  0        0       -6.50000 
+#  4| 0        0        0        0        0        0       
+#  5| 0        0        0        0        0        0       
+#  6| 0        0        0        0        0        0       
+#  7| 0        0        0        0        0        0       
+#  8| 0        0        0        0        0        0       
+#  9| 0        0        0        0        0        0       
+# 10| 0        0        0        0        0        0       
+# 11| 0        0        0        0        0        0       
+# 12| 0        0        0        0        0        0       
+# 13| 0        0        0        0        0        0       
+# 14| 0        0        0        0        0        0       
+# 15| 0        0        0        0        0        0       
+# INFO  [control_allocator]   minimum =
+#   | 0      | 1      | 2      | 3      | 4      | 5      | 6      | 7      | 8      | 9      |10      |11      |12      |13      |14      |15      
+#  0| 0        0        0        0        0        0        0        0        0        0        0        0        0        0        0        0       
+# INFO  [control_allocator]   maximum =
+#   | 0      | 1      | 2      | 3      | 4      | 5      | 6      | 7      | 8      | 9      |10      |11      |12      |13      |14      |15      
+#  0| 1.00000  1.00000  1.00000  1.00000  0        0        0        0        0        0        0        0        0        0        0        0       
+# INFO  [control_allocator]   Configured actuators: 4
+# control_allocator: cycle: 8969 events, 0us elapsed, 0.00us avg, min 0us max 0us 0.000us rms
+#       
+
+
+        return np.clip(desired_wrench, 0.0, 1.0)  # Ensure throttles are within [0, 1] range
 
 def main():
 
