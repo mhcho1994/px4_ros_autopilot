@@ -58,19 +58,19 @@ class OffboardControlModule(Node):
         self.subscribers_['vehicle_status'] = self.create_subscription(
             VehicleStatus,
             '/fmu/out/vehicle_status',
-            self.vehicle_status_callback_,
+            self.vehicle_status_subscribe_,
             qos_profile_sub)
 
         self.subscribers_['vehicle_odometry'] = self.create_subscription(
             VehicleOdometry,
             '/fmu/out/vehicle_odometry',
-            self.vehicle_odometry_callback_,
+            self.vehicle_odometry_subscribe_,
             qos_profile_sub)
 
         # self.subscribers_['pose_command'] = self.create_subscription(
         #     PoseStamped,
         #     '/ros_autopilot/in/pose_command',
-        #     self.pose_command_callback_,
+        #     self.pose_command_subscribe_,
         #     qos_profile_sub)
 
         self.publishers_['vehicle_command'] = self.create_publisher(
@@ -94,8 +94,8 @@ class OffboardControlModule(Node):
             qos_profile_pub)
 
         # parameters for callback and initialize
-        # [sec,Hz] offboard timer (offboard mode should be at least 2Hz)
-        self.timer_offboard_ = self.create_timer(0.1, self.offboard_mode_publish_)
+        # [sec,Hz] flight management timer (offboard mode should be at least 2Hz)
+        self.timer_flight_management_ = self.create_timer(0.01, self.flight_mode_manage_)
         # [sec,Hz] controller timer (adjust publishing period based on controller type)
         self.timer_controller_ = self.create_timer(0.005, self.controller_output_publish_)
 
@@ -112,35 +112,44 @@ class OffboardControlModule(Node):
 
         # initialize controller mode, navigation state, guidance flow
         self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
-        self.control_mode = OffboardControlType.ACTUATOR
+        self.control_mode = OffboardControlType.POSITION
         self.controller_type = ControllerType.SE3_GEOMETRIC
         self.entry_excute = False
         self.flight_phase = np.uint8(0)
         self.next_phase_flag = False
+        self.phase_clock = np.uint32(0)
 
     # callbacks
-    def vehicle_odometry_callback_(self, msg):
+    def vehicle_odometry_subscribe_(self, msg):
         self.last_odom_receive = msg.timestamp
         self.odom_position = np.array(msg.position, dtype=np.float32)
         self.odom_velocity = np.array(msg.velocity, dtype=np.float32)
         self.odom_quaternion = np.array(msg.q, dtype=np.float32)
         self.odom_rate = np.array(msg.angular_velocity, dtype=np.float32)
 
-    def vehicle_status_callback_(self, msg):
+    def vehicle_status_subscribe_(self, msg):
         self.nav_state = msg.nav_state
 
-    def publish_vehicle_command(self, command, param1=0.0, param2=0.0, param3=0.0):
-        msg                     =   VehicleCommand()
-        msg.timestamp           =   int(Clock().now().nanoseconds/1000) # time in microseconds
-        msg.param1              =   param1
-        msg.param2              =   param2
-        msg.param3              =   param3
-        msg.command             =   command     # command ID
-        msg.target_system       =   0           # system which should execute the command
-        msg.target_component    =   1           # component which should execute the command, 0 for all components
-        msg.source_system       =   1           # system sending the command
-        msg.source_component    =   1           # component sending the command
-        msg.from_external       =   True
+    # def pose_command_subscribe_(self, msg):
+    #     self.command_position = msg.point
+    #     self.command_quaternion = msg.quaternion
+
+    def vehicle_command_publish_(self, command, param1=0.0, param2=0.0, param3=0.0, param4=0.0, param5=0.0, param6=0.0, param7=0.0):
+        msg = VehicleCommand()
+        msg.timestamp = int(Clock().now().nanoseconds/1000) # [us] time after initiating node
+        msg.param1 = param1 # [-] 1 for using px4 custom mode
+        msg.param2 = param2 # [-] px4 custom mode flag
+        msg.param3 = param3 # [-] px4 custom sub mode flag (auto)
+        msg.param4 = param4 # [-] defined by MAVLink uint16 VEHICLE_CMD enum
+        msg.param5 = param5 # [-] defined by MAVLink uint16 VEHICLE_CMD enum
+        msg.param6 = param6 # [-] defined by MAVLink uint16 VEHICLE_CMD enum
+        msg.param7 = param7 # [-] defined by MAVLink uint16 VEHICLE_CMD enum
+        msg.command = command #[-] command ID
+        msg.target_system = 0 # [-] system which should execute the command
+        msg.target_component = 1 # [-] component which should execute the command, 0 for all components
+        msg.source_system = 1 # [-] system sending the command
+        msg.source_component = 1 # [-] component sending the command
+        msg.from_external = True # [-] indacation of command from external enviornment
         self.publishers_['vehicle_command'].publish(msg)
 
     def offboard_mode_publish_(self):
@@ -199,13 +208,34 @@ class OffboardControlModule(Node):
 
         # flight phase 0: idle/arming/takeoff
         if self.flight_phase == 0:
-            # entry
+            # entry:
             if self.entry_excute == False:
                 self.get_logger().info('flight phase 0: idle/arming/auto-takeoff')
                 self.entry_excute = True
-            # during
-                self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE,1.0,6.0)
-                self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,1.0)
+                target_takeoff_alt = np.float32(10.0) # [m] target takeoff altitude
+            # during:
+            # self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 2.0) # [-] default auto-takeoff to 2.5m ASL
+            self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF, 0.0, 0.0, 0.0, np.nan, np.nan, np.nan, target_takeoff_alt) # [deg, m] yaw in NED, lat/LON in WGS-84, altitude AMSL
+            self.vehicle_command_publish_(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
+            # exit:
+            if -(self.odom_position) > -(target_takeoff_alt-1.0):
+                self.offboard_mode_publish_()
+                self.next_phase_flag = True
+
+        elif self.flight_phase == 1:
+            # entry:
+            if self.entry_execute == False:
+                self.get_logger().info('flight phase 1: offboard control')
+                self.entry_execute = True
+
+        if self.next_phase_flag:
+            past_flag_temp = self.flight_phase
+            self.flight_phase = self.flight_phase+1
+            new_flag_temp = self.flight_phase
+            self.next_phase_flag = False
+            self.entry_execute = False
+
+            print('Next Flight Phase %d -> %d' %(past_flag_temp,new_flag_temp))
 
 
 
