@@ -117,7 +117,6 @@ class OffboardControlModule(Node):
         self.entry_excute = False
         self.flight_phase = np.uint8(0)
         self.next_phase_flag = False
-        self.
 
     # callbacks
     def vehicle_odometry_callback_(self, msg):
@@ -200,11 +199,13 @@ class OffboardControlModule(Node):
 
         # flight phase 0: idle/arming/takeoff
         if self.flight_phase == 0:
-
-        if self.counter < 100:
-            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE,1.0,6.0)
-            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,1.0)
-            self.counter += 1
+            # entry
+            if self.entry_excute == False:
+                self.get_logger().info('flight phase 0: idle/arming/auto-takeoff')
+                self.entry_excute = True
+            # during
+                self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE,1.0,6.0)
+                self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,1.0)
 
 
 
