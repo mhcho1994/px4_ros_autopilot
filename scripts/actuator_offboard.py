@@ -27,7 +27,7 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Int32
 
 # own library
-from offboard_mode import OffboardControlType, ControllerType
+from offboard_mode import OffboardControlType, ControllerType, EffectivenessType
 # from Controller_lib import Controller
 
 
